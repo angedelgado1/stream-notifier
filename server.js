@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 // server.js
 
-// polyfill for WebSocket (required on Replit)
+// load local .env in development
+require('dotenv').config();
+
+// polyfill for WebSocket (required on Replit/Koyeb)
 global.WebSocket = require("ws");
 
 // keep-alive server
@@ -10,7 +13,7 @@ keepAlive();
 
 // deps
 const fetch = require("node-fetch");
-const { WebcastPushConnection } = require("tiktok-live-connector");
+const { TikTokLiveConnection } = require("tiktok-live-connector");
 
 // config
 const streamers = ["moneybooty", "ftm_frag_it"];
@@ -31,7 +34,7 @@ function log(platform, level, user, msg = "") {
       `[${platform}] ` +
       `[${level}] ` +
       `@${user}` +
-      (msg ? ` — ${msg}` : ""),
+      (msg ? ` — ${msg}` : "")
   );
 }
 
@@ -61,7 +64,7 @@ async function sendNotification(username) {
   log("DISCORD", "NOTIFY", username);
 }
 
-// batch notifications for 90 s across platforms
+// batch notifications for 90s across platforms
 function debounceNotify(username, platform) {
   liveStatus[username][platform] = true;
   if (liveStatus[username].timeout) return;
@@ -71,33 +74,33 @@ function debounceNotify(username, platform) {
   }, 90_000);
 }
 
-// — TikTok via connector, with explicit offline status —
+// — TikTok via waitUntilLive() —
 streamers.forEach((username) => {
-  const conn = new WebcastPushConnection(username);
+  (async () => {
+    while (true) {
+      const conn = new TikTokLiveConnection(username, {
+        fetchRoomInfoOnConnect: true,
+        requestOptions: {
+          headers: { cookie: process.env.TIKTOK_COOKIE },
+        },
+        // default polling is 1000ms; adjust if you prefer fewer requests
+        requestPollingIntervalMs: 60_000,
+      });
 
-  conn.on("streamStart", () => {
-    log("TikTok", "LIVE", username);
-    debounceNotify(username, "tiktok");
-  });
+      log("TikTok", "INFO", username, "waiting for live");
+      try {
+        await conn.waitUntilLive();
+        log("TikTok", "LIVE", username);
+        debounceNotify(username, "tiktok");
+      } catch (err) {
+        log("TikTok", "ERROR", username, err.message);
+      }
 
-  conn.on("streamEnd", () => {
-    liveStatus[username].tiktok = false;
-    log("TikTok", "INFO", username, "stream ended");
-  });
-
-  async function tryConnect() {
-    log("TikTok", "INFO", username, "connecting…");
-    try {
-      await conn.connect();
-      log("TikTok", "SUCCESS", username, "watching");
-    } catch {
-      log("TikTok", "STATUS", username, "live=false");
-    } finally {
-      setTimeout(tryConnect, 30_000);
+      // reset status and loop again for next live session
+      liveStatus[username].tiktok = false;
+      log("TikTok", "INFO", username, "resetting watch loop");
     }
-  }
-
-  tryConnect();
+  })();
 });
 
 // — Twitch REST polling —
@@ -109,7 +112,7 @@ async function refreshTwitchToken() {
       `?client_id=${twitchClientId}` +
       `&client_secret=${twitchClientSecret}` +
       `&grant_type=client_credentials`,
-    { method: "POST" },
+    { method: "POST" }
   );
   twitchAccessToken = (await res.json()).access_token;
 }
@@ -125,7 +128,7 @@ async function checkTwitch(username) {
           "Client-ID": twitchClientId,
           Authorization: `Bearer ${twitchAccessToken}`,
         },
-      },
+      }
     );
     const data = await res.json();
     const isLive = Array.isArray(data.data) && data.data.length > 0;
@@ -140,9 +143,8 @@ async function checkTwitch(username) {
   }
 }
 
-// schedule & initial
+// schedule & initial Twitch checks
 setInterval(() => {
   streamers.forEach(checkTwitch);
 }, 60_000);
-
 streamers.forEach(checkTwitch);
