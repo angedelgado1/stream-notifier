@@ -31,7 +31,10 @@ const fetch = require("node-fetch");
 const { WebcastPushConnection } = require("tiktok-live-connector");
 
 // config
-const streamers = ["moneybooty", "ftm_frag_it"];
+const streamers = [
+  { key: "moneybooty", twitch: "moneybooty", tiktok: "moneybooty" },
+  { key: "ftm_frag_it", twitch: "ftm_frag_it", tiktok: "ftm.frag.it" }
+];
 const webhook = process.env.WEBHOOK_URL;
 const twitchClientId = process.env.TWITCH_CLIENT_ID;
 const twitchClientSecret = process.env.TWITCH_CLIENT_SECRET;
@@ -39,10 +42,10 @@ const debugTikTok = process.env.DEBUG_TIKTOK === "true";
 const debugTwitch = process.env.DEBUG_TWITCH === "true";
 
 // in-memory state
-const liveStatus = {
-  moneybooty: { tiktok: false, twitch: false, timeout: null },
-  ftm_frag_it: { tiktok: false, twitch: false, timeout: null },
-};
+const liveStatus = streamers.reduce((acc, s) => {
+  acc[s.key] = { tiktok: false, twitch: false, timeout: null };
+  return acc;
+}, {});
 
 // structured logger
 function log(platform, level, user, msg = "") {
@@ -92,53 +95,50 @@ function debounceNotify(username, platform) {
 }
 
 // — TikTok via WebcastPushConnection (event-driven) —
-streamers.forEach((username) => {
-  const conn = new WebcastPushConnection(username, {
+streamers.forEach(({ key, tiktok: user }) => {
+  const conn = new WebcastPushConnection(user, {
     fetchRoomInfoOnConnect: true,
     requestOptions: {
       headers: { cookie: process.env.TIKTOK_COOKIE },
     },
   });
 
-  // Throttle duplicate errors
   const lastErrorAt = {};
 
   conn.on("streamStart", () => {
-    log("TikTok", "LIVE", username);
-    debounceNotify(username, "tiktok");
+    log("TikTok", "LIVE", key);
+    debounceNotify(key, "tiktok");
   });
 
   conn.on("streamEnd", () => {
-    liveStatus[username].tiktok = false;
-    log("TikTok", "INFO", username, "stream ended");
+    liveStatus[key].tiktok = false;
+    log("TikTok", "INFO", key, "stream ended");
   });
 
   conn.on("error", (err) => {
     if (!debugTikTok) return;
-    const key = `${username}:${err.name}:${err.message}`;
+    const errKey = `${key}:${err.name}:${err.message}`;
     const now = Date.now();
-    if (now - (lastErrorAt[key] || 0) < 30_000) return;
-    lastErrorAt[key] = now;
-    const header = `${err.name}: ${err.message}`;
+    if (now - (lastErrorAt[errKey] || 0) < 30_000) return;
+    lastErrorAt[errKey] = now;
     console.error(
-      `[${new Date().toISOString()}] [TikTok] [ERROR] @${username} — ${header}`
+      `[${new Date().toISOString()}] [TikTok] [ERROR] @${key} — ${err.name}: ${err.message}`
     );
     console.error(err.stack);
   });
 
   conn.on("disconnected", () => {
-    log("TikTok", "INFO", username, "disconnected—reconnecting in 30s");
+    log("TikTok", "INFO", key, "disconnected—reconnecting in 30s");
     setTimeout(() => conn.connect().catch(() => {}), 30_000);
   });
 
-  // initial connect attempt (and retry loop)
   (async function tryConnect() {
     try {
-      log("TikTok", "INFO", username, "connecting…");
+      log("TikTok", "INFO", key, "connecting…");
       await conn.connect();
-      log("TikTok", "SUCCESS", username, "watching");
+      log("TikTok", "SUCCESS", key, "watching");
     } catch {
-      log("TikTok", "INFO", username, "not live yet—retry in 30s");
+      log("TikTok", "INFO", key, "not live yet—retry in 30s");
       setTimeout(tryConnect, 30_000);
     }
   })();
@@ -158,12 +158,12 @@ async function refreshTwitchToken() {
   twitchAccessToken = (await res.json()).access_token;
 }
 
-async function checkTwitch(username) {
+async function checkTwitch({ key, twitch: user }) {
   if (!twitchAccessToken) await refreshTwitchToken();
-  log("Twitch", "INFO", username, "polling…");
+  log("Twitch", "INFO", key, "polling…");
   try {
     const res = await fetch(
-      `https://api.twitch.tv/helix/streams?user_login=${username}`,
+      `https://api.twitch.tv/helix/streams?user_login=${user}`,
       {
         headers: {
           "Client-ID": twitchClientId,
@@ -173,26 +173,23 @@ async function checkTwitch(username) {
     );
     const data = await res.json();
     const isLive = Array.isArray(data.data) && data.data.length > 0;
-    log("Twitch", "STATUS", username, `live=${isLive}`);
-    if (isLive && !liveStatus[username].twitch) {
-      log("Twitch", "LIVE", username);
-      debounceNotify(username, "twitch");
+    log("Twitch", "STATUS", key, `live=${isLive}`);
+    if (isLive && !liveStatus[key].twitch) {
+      log("Twitch", "LIVE", key);
+      debounceNotify(key, "twitch");
     }
-    liveStatus[username].twitch = isLive;
+    liveStatus[key].twitch = isLive;
   } catch (err) {
     if (debugTwitch) {
       console.error(
-        `[${new Date().toISOString()}] [Twitch] [ERROR] @${username} — ${err.name}: ${err.message}`
+        `[${new Date().toISOString()}] [Twitch] [ERROR] @${key} — ${err.name}: ${err.message}`
       );
       console.error(err.stack);
     } else {
-      log("Twitch", "ERROR", username, err.message);
+      log("Twitch", "ERROR", key, err.message);
     }
   }
 }
 
-// schedule & initial Twitch checks
-setInterval(() => {
-  streamers.forEach(checkTwitch);
-}, 60_000);
+setInterval(() => streamers.forEach(checkTwitch), 60_000);
 streamers.forEach(checkTwitch);
