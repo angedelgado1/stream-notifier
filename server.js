@@ -86,34 +86,35 @@ function debounceNotify(username, platform) {
   }, 90_000);
 }
 
-// — TikTok via waitUntilLive() —
+// — TikTok via waitUntilLive(), with error‐resilient loop —
 streamers.forEach((username) => {
   (async () => {
     while (true) {
-      const conn = new TikTokLiveConnection(username, {
-        fetchRoomInfoOnConnect: true,
-        requestOptions: {
-          headers: { cookie: process.env.TIKTOK_COOKIE },
-        },
-        // default polling is 1000ms; adjust if you prefer fewer requests
-        requestPollingIntervalMs: 60_000,
-      });
-
-      log("TikTok", "INFO", username, "waiting for live");
       try {
+        const conn = new TikTokLiveConnection(username, {
+          fetchRoomInfoOnConnect: true,
+          requestOptions: {
+            headers: { cookie: process.env.TIKTOK_COOKIE },
+          },
+          requestPollingIntervalMs: 60_000,
+        });
+        log("TikTok", "INFO", username, "waiting for live");
         await conn.waitUntilLive();
         log("TikTok", "LIVE", username);
         debounceNotify(username, "tiktok");
       } catch (err) {
-        log("TikTok", "ERROR", username, err.message);
+        // catch *any* TikTok errors and keep going
+        log("TikTok", "ERROR", username, err.message || err.toString());
+      } finally {
+        // always reset status, then pause briefly before retrying
+        liveStatus[username].tiktok = false;
+        log("TikTok", "INFO", username, "resetting watch loop");
+        await new Promise((r) => setTimeout(r, 30_000));
       }
-
-      // reset status and loop again for next live session
-      liveStatus[username].tiktok = false;
-      log("TikTok", "INFO", username, "resetting watch loop");
     }
   })();
 });
+
 
 // — Twitch REST polling —
 let twitchAccessToken = null;
