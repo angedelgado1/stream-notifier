@@ -7,9 +7,21 @@ require('dotenv').config();
 // polyfill for WebSocket (required on Replit/Koyeb)
 global.WebSocket = require("ws");
 
-// keep-alive server
-const keepAlive = require("./keepAlive");
-keepAlive();
+const express = require("express");
+const app = express();
+
+// health check for Koyeb
+app.get("/health", (_req, res) => res.sendStatus(200));
+
+// optional: keep your root message
+app.get("/", (_req, res) => res.send("Bot is alive"));
+
+// bind to the port Koyeb provides (or 3000 locally)
+const port = process.env.PORT || 3000;
+app.listen(port, () => {
+  console.log(`Server listening on port ${port}`);
+});
+
 
 // deps
 const fetch = require("node-fetch");
