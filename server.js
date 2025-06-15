@@ -12,7 +12,6 @@ const app = express();
 
 // health check for Koyeb
 app.get("/health", (_req, res) => res.sendStatus(200));
-
 // optional: keep your root message
 app.get("/", (_req, res) => res.send("Bot is alive"));
 
@@ -22,10 +21,14 @@ app.listen(port, () => {
   console.log(`Server listening on port ${port}`);
 });
 
+// prevent unhandled rejections from crashing
+process.on("unhandledRejection", (reason) => {
+  console.error("UnhandledRejection:", reason);
+});
 
 // deps
 const fetch = require("node-fetch");
-const { TikTokLiveConnection } = require("tiktok-live-connector");
+const { WebcastPushConnection } = require("tiktok-live-connector");
 
 // config
 const streamers = ["moneybooty", "ftm_frag_it"];
@@ -86,35 +89,46 @@ function debounceNotify(username, platform) {
   }, 90_000);
 }
 
-// — TikTok via waitUntilLive(), with error‐resilient loop —
+// — TikTok via WebcastPushConnection (event-driven) —
 streamers.forEach((username) => {
-  (async () => {
-    while (true) {
-      try {
-        const conn = new TikTokLiveConnection(username, {
-          fetchRoomInfoOnConnect: true,
-          requestOptions: {
-            headers: { cookie: process.env.TIKTOK_COOKIE },
-          },
-          requestPollingIntervalMs: 60_000,
-        });
-        log("TikTok", "INFO", username, "waiting for live");
-        await conn.waitUntilLive();
-        log("TikTok", "LIVE", username);
-        debounceNotify(username, "tiktok");
-      } catch (err) {
-        // catch *any* TikTok errors and keep going
-        log("TikTok", "ERROR", username, err.message || err.toString());
-      } finally {
-        // always reset status, then pause briefly before retrying
-        liveStatus[username].tiktok = false;
-        log("TikTok", "INFO", username, "resetting watch loop");
-        await new Promise((r) => setTimeout(r, 30_000));
-      }
+  const conn = new WebcastPushConnection(username, {
+    fetchRoomInfoOnConnect: true,
+    requestOptions: {
+      headers: { cookie: process.env.TIKTOK_COOKIE },
+    },
+  });
+
+  conn.on("streamStart", () => {
+    log("TikTok", "LIVE", username);
+    debounceNotify(username, "tiktok");
+  });
+
+  conn.on("streamEnd", () => {
+    liveStatus[username].tiktok = false;
+    log("TikTok", "INFO", username, "stream ended");
+  });
+
+  conn.on("error", (err) => {
+    log("TikTok", "ERROR", username, err.message || err.toString());
+  });
+
+  conn.on("disconnected", () => {
+    log("TikTok", "INFO", username, "disconnected—reconnecting in 30s");
+    setTimeout(() => conn.connect().catch(() => {}), 30_000);
+  });
+
+  // initial connect attempt (and retry loop)
+  (async function tryConnect() {
+    try {
+      log("TikTok", "INFO", username, "connecting…");
+      await conn.connect();
+      log("TikTok", "SUCCESS", username, "watching");
+    } catch {
+      log("TikTok", "INFO", username, "not live yet—retry in 30s");
+      setTimeout(tryConnect, 30_000);
     }
   })();
 });
-
 
 // — Twitch REST polling —
 let twitchAccessToken = null;
