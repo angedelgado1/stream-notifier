@@ -8,27 +8,22 @@ require('dotenv').config();
 global.WebSocket = require("ws");
 
 const express = require("express");
+const fetch = require("node-fetch");
+const { WebcastPushConnection } = require("tiktok-live-connector");
 const app = express();
 
 // health check for Koyeb
 app.get("/health", (_req, res) => res.sendStatus(200));
-// optional: keep your root message
 app.get("/", (_req, res) => res.send("Bot is alive"));
 
 // bind to the port Koyeb provides (or 3000 locally)
 const port = process.env.PORT || 3000;
-app.listen(port, () => {
-  console.log(`Server listening on port ${port}`);
-});
+app.listen(port, () => console.log(`Server listening on port ${port}`));
 
 // prevent unhandled rejections from crashing
-process.on("unhandledRejection", (reason) => {
+global.process.on("unhandledRejection", (reason) => {
   console.error("UnhandledRejection:", reason);
 });
-
-// deps
-const fetch = require("node-fetch");
-const { WebcastPushConnection } = require("tiktok-live-connector");
 
 // config
 const streamers = [
@@ -50,10 +45,7 @@ const liveStatus = streamers.reduce((acc, s) => {
 // structured logger
 function log(platform, level, user, msg = "") {
   console.log(
-    `[${new Date().toISOString()}] ` +
-      `[${platform}] ` +
-      `[${level}] ` +
-      `@${user}` +
+    `[${new Date().toISOString()}] [${platform}] [${level}] @${user}` +
       (msg ? ` — ${msg}` : "")
   );
 }
@@ -66,13 +58,13 @@ async function sendNotification(username) {
 
   if (t && tw) {
     content =
-      `🚨 **@${username} is now live on Twitch & TikTok!**\n` +
+      `🚨 **@${s.key} is now live on Twitch & TikTok!**\n` +
       `🔴 Twitch: https://twitch.tv/${s.twitch}\n` +
       `🎥 TikTok: https://www.tiktok.com/@${s.tiktok}/live`;
   } else if (tw) {
-    content = `🔴 **@${username} is live on Twitch!** https://twitch.tv/${s.twitch}`;
+    content = `🔴 **@${s.key} is live on Twitch!** https://twitch.tv/${s.twitch}`;
   } else if (t) {
-    content = `🎥 **@${username} is live on TikTok!** https://www.tiktok.com/@${s.tiktok}/live`;
+    content = `🎥 **@${s.key} is live on TikTok!** https://www.tiktok.com/@${s.tiktok}/live`;
   } else {
     return;
   }
@@ -82,10 +74,10 @@ async function sendNotification(username) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ content }),
   });
-  log("DISCORD", "NOTIFY", username);
+  log("DISCORD", "NOTIFY", s.key);
 }
 
-// batch notifications for 90s across platforms
+// debounce notifications for 90s across platforms
 function debounceNotify(username, platform) {
   liveStatus[username][platform] = true;
   if (liveStatus[username].timeout) return;
@@ -95,51 +87,49 @@ function debounceNotify(username, platform) {
   }, 90_000);
 }
 
-// — TikTok via WebcastPushConnection (event-driven) —
+// — TikTok (event-driven) —
 streamers.forEach(({ key, tiktok: user }) => {
   const conn = new WebcastPushConnection(user, {
     fetchRoomInfoOnConnect: true,
-    requestOptions: {
-      headers: { cookie: process.env.TIKTOK_COOKIE },
-    },
+    requestOptions: { headers: { cookie: process.env.TIKTOK_COOKIE } },
   });
 
   const lastErrorAt = {};
 
   conn.on("streamStart", () => {
-    log("TikTok", "LIVE", key);
+    log("TikTok", "LIVE", user);
     debounceNotify(key, "tiktok");
   });
 
   conn.on("streamEnd", () => {
     liveStatus[key].tiktok = false;
-    log("TikTok", "INFO", key, "stream ended");
+    log("TikTok", "INFO", user, "stream ended");
   });
 
   conn.on("error", (err) => {
     if (!debugTikTok) return;
-    const errKey = `${key}:${err.name}:${err.message}`;
+    const errKey = `${user}:${err.name}:${err.message}`;
     const now = Date.now();
     if (now - (lastErrorAt[errKey] || 0) < 30_000) return;
     lastErrorAt[errKey] = now;
     console.error(
-      `[${new Date().toISOString()}] [TikTok] [ERROR] @${key} — ${err.name}: ${err.message}`
+      `[${new Date().toISOString()}] [TikTok] [ERROR] @${user} — ${err.name}: ${err.message}`
     );
     console.error(err.stack);
   });
 
   conn.on("disconnected", () => {
-    log("TikTok", "INFO", key, "disconnected—reconnecting in 30s");
+    log("TikTok", "INFO", user, "disconnected—reconnecting in 30s");
     setTimeout(() => conn.connect().catch(() => {}), 30_000);
   });
 
   (async function tryConnect() {
     try {
-      log("TikTok", "INFO", key, "connecting…");
+      log("TikTok", "INFO", user, "connecting…");
       await conn.connect();
-      log("TikTok", "SUCCESS", key, "watching");
+      log("TikTok", "SUCCESS", user, "watching");
     } catch {
-      log("TikTok", "INFO", key, "not live yet—retry in 30s");
+      log("TikTok", "INFO", user, "not live yet—retry in 30s");
       setTimeout(tryConnect, 30_000);
     }
   })();
@@ -150,10 +140,8 @@ let twitchAccessToken = null;
 
 async function refreshTwitchToken() {
   const res = await fetch(
-    `https://id.twitch.tv/oauth2/token` +
-      `?client_id=${twitchClientId}` +
-      `&client_secret=${twitchClientSecret}` +
-      `&grant_type=client_credentials`,
+    `https://id.twitch.tv/oauth2/token?client_id=${twitchClientId}` +
+      `&client_secret=${twitchClientSecret}&grant_type=client_credentials`,
     { method: "POST" }
   );
   twitchAccessToken = (await res.json()).access_token;
@@ -161,33 +149,28 @@ async function refreshTwitchToken() {
 
 async function checkTwitch({ key, twitch: user }) {
   if (!twitchAccessToken) await refreshTwitchToken();
-  log("Twitch", "INFO", key, "polling…");
+  log("Twitch", "INFO", user, "polling…");
   try {
     const res = await fetch(
       `https://api.twitch.tv/helix/streams?user_login=${user}`,
-      {
-        headers: {
-          "Client-ID": twitchClientId,
-          Authorization: `Bearer ${twitchAccessToken}`,
-        },
-      }
+      { headers: { "Client-ID": twitchClientId, Authorization: `Bearer ${twitchAccessToken}` } }
     );
     const data = await res.json();
     const isLive = Array.isArray(data.data) && data.data.length > 0;
-    log("Twitch", "STATUS", key, `live=${isLive}`);
+    log("Twitch", "STATUS", user, `live=${isLive}`);
     if (isLive && !liveStatus[key].twitch) {
-      log("Twitch", "LIVE", key);
+      log("Twitch", "LIVE", user);
       debounceNotify(key, "twitch");
     }
     liveStatus[key].twitch = isLive;
   } catch (err) {
     if (debugTwitch) {
       console.error(
-        `[${new Date().toISOString()}] [Twitch] [ERROR] @${key} — ${err.name}: ${err.message}`
+        `[${new Date().toISOString()}] [Twitch] [ERROR] @${user} — ${err.name}: ${err.message}`
       );
       console.error(err.stack);
     } else {
-      log("Twitch", "ERROR", key, err.message);
+      log("Twitch", "ERROR", user, err.message);
     }
   }
 }
