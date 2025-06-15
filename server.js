@@ -35,6 +35,8 @@ const streamers = ["moneybooty", "ftm_frag_it"];
 const webhook = process.env.WEBHOOK_URL;
 const twitchClientId = process.env.TWITCH_CLIENT_ID;
 const twitchClientSecret = process.env.TWITCH_CLIENT_SECRET;
+const debugTikTok = process.env.DEBUG_TIKTOK === "true";
+const debugTwitch = process.env.DEBUG_TWITCH === "true";
 
 // in-memory state
 const liveStatus = {
@@ -98,6 +100,9 @@ streamers.forEach((username) => {
     },
   });
 
+  // Throttle duplicate errors
+  const lastErrorAt = {};
+
   conn.on("streamStart", () => {
     log("TikTok", "LIVE", username);
     debounceNotify(username, "tiktok");
@@ -109,7 +114,16 @@ streamers.forEach((username) => {
   });
 
   conn.on("error", (err) => {
-    log("TikTok", "ERROR", username, err.message || err.toString());
+    if (!debugTikTok) return;
+    const key = `${username}:${err.name}:${err.message}`;
+    const now = Date.now();
+    if (now - (lastErrorAt[key] || 0) < 30_000) return;
+    lastErrorAt[key] = now;
+    const header = `${err.name}: ${err.message}`;
+    console.error(
+      `[${new Date().toISOString()}] [TikTok] [ERROR] @${username} — ${header}`
+    );
+    console.error(err.stack);
   });
 
   conn.on("disconnected", () => {
@@ -166,7 +180,14 @@ async function checkTwitch(username) {
     }
     liveStatus[username].twitch = isLive;
   } catch (err) {
-    log("Twitch", "ERROR", username, err.message);
+    if (debugTwitch) {
+      console.error(
+        `[${new Date().toISOString()}] [Twitch] [ERROR] @${username} — ${err.name}: ${err.message}`
+      );
+      console.error(err.stack);
+    } else {
+      log("Twitch", "ERROR", username, err.message);
+    }
   }
 }
 
