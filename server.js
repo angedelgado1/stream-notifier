@@ -60,18 +60,19 @@ function log(platform, level, user, msg = "") {
 
 // send a Discord webhook
 async function sendNotification(username) {
+  const s = streamers.find((st) => st.key === username);
   const { tiktok: t, twitch: tw } = liveStatus[username];
   let content = "";
 
   if (t && tw) {
     content =
       `🚨 **@${username} is now live on Twitch & TikTok!**\n` +
-      `🔴 Twitch: https://twitch.tv/${username}\n` +
-      `🎥 TikTok: https://www.tiktok.com/@${username}/live`;
+      `🔴 Twitch: https://twitch.tv/${s.twitch}\n` +
+      `🎥 TikTok: https://www.tiktok.com/@${s.tiktok}/live`;
   } else if (tw) {
-    content = `🔴 **@${username} is live on Twitch!** https://twitch.tv/${username}`;
+    content = `🔴 **@${username} is live on Twitch!** https://twitch.tv/${s.twitch}`;
   } else if (t) {
-    content = `🎥 **@${username} is live on TikTok!** https://www.tiktok.com/@${username}/live`;
+    content = `🎥 **@${username} is live on TikTok!** https://www.tiktok.com/@${s.tiktok}/live`;
   } else {
     return;
   }
